@@ -8,8 +8,8 @@ from models import NaiveWrapper, HuggingFaceWrapper, OffloadWrapper
 
 from accelerate import init_empty_weights
 
-# python run_offload.py --mode ol --max-new-token 5
-# python run_offload.py --mode ol -s
+# python run_offload.py --mode ol -s --max-new-token 5
+# python run_offload.py --mode ol 
 
 def main(args):
     # deterministic

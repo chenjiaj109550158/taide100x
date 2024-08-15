@@ -29,10 +29,11 @@ class OffloadWrapper(WrapperBase):
         device_map = infer_auto_device_map(
             llm,
             max_memory={
-                0: "5GiB",
+                0: "8GiB",
                 "cpu": "22GiB"
             },
             no_split_module_classes=["LlamaDecoderLayer"],
+            dtype=torch.float16,
         )
 
         layers_to_be_hooked = list(device_map.keys())
@@ -56,7 +57,7 @@ class OffloadWrapper(WrapperBase):
             device_map=device_map,
             # no_split_module_classes=["LlamaDecoderLayer"],
             dtype=torch.float16,
-            layers_to_be_hooked = layers_to_be_hooked
+            # layers_to_be_hooked = layers_to_be_hooked
         )
         
     @torch.no_grad()
