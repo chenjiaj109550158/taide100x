@@ -738,19 +738,20 @@ def attach_align_device_hook(
         return
 
     # Recurse on all children of the module.
-    for child_name, child in module.named_children():
-        child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
-        attach_align_device_hook(
-            child,
-            execution_device=execution_device,
-            offload=offload,
-            weights_map=weights_map,
-            offload_buffers=offload_buffers,
-            module_name=child_name,
-            preload_module_classes=preload_module_classes,
-            skip_keys=skip_keys,
-            tied_params_map=tied_params_map,
-        )
+    # print(f'module_name in attach_align_device_hook: {module_name}')
+    # for child_name, child in module.named_children():
+    #     child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+    #     attach_align_device_hook(
+    #         child,
+    #         execution_device=execution_device,
+    #         offload=offload,
+    #         weights_map=weights_map,
+    #         offload_buffers=offload_buffers,
+    #         module_name=child_name,
+    #         preload_module_classes=preload_module_classes,
+    #         skip_keys=skip_keys,
+    #         tied_params_map=tied_params_map,
+    #     )
 
 
 def remove_hook_from_submodules(module: nn.Module):
@@ -775,6 +776,7 @@ def attach_align_device_hook_on_blocks(
     skip_keys: Optional[Union[str, List[str]]] = None,
     preload_module_classes: Optional[List[str]] = None,
     tied_params_map: Optional[Dict[int, Dict[torch.device, torch.Tensor]]] = None,
+    layers_to_be_hooked: Optional[List[str]] = None, #
 ):
     """
     Attaches `AlignDevicesHook` to all blocks of a given model as needed.
@@ -881,20 +883,25 @@ def attach_align_device_hook_on_blocks(
             tied_params_map=tied_params_map,
         )
         add_hook_to_module(module, hook)
-
-    for child_name, child in module.named_children():
-        child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
-        attach_align_device_hook_on_blocks(
-            child,
-            execution_device=execution_device,
-            offload=offload,
-            weights_map=weights_map,
-            offload_buffers=offload_buffers,
-            module_name=child_name,
-            preload_module_classes=preload_module_classes,
-            skip_keys=skip_keys,
-            tied_params_map=tied_params_map,
-        )
+    if layers_to_be_hooked is not None and module_name in layers_to_be_hooked:
+        # print(f'|{module_name}| -- yes')
+        return
+    else:
+        # print(f'|{module_name}| -- no')
+        for child_name, child in module.named_children():
+            child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+            attach_align_device_hook_on_blocks(
+                child,
+                execution_device=execution_device,
+                offload=offload,
+                weights_map=weights_map,
+                offload_buffers=offload_buffers,
+                module_name=child_name,
+                preload_module_classes=preload_module_classes,
+                skip_keys=skip_keys,
+                tied_params_map=tied_params_map,
+                layers_to_be_hooked=layers_to_be_hooked
+            )
 
 
 class CpuOffload(ModelHook):

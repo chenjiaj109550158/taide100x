@@ -314,6 +314,7 @@ def dispatch_model(
     skip_keys: Optional[Union[str, List[str]]] = None,
     preload_module_classes: Optional[List[str]] = None,
     force_hooks: bool = False,
+    layers_to_be_hooked: Optional[List[str]] = None, #
 ):
     """
     Dispatches a model according to a given device map. Layers of the model might be spread across GPUs, offloaded on
@@ -420,7 +421,6 @@ def dispatch_model(
 
                 # Note: To handle the disk offloading case, we can not simply use weights_map[param_name].data_ptr() as the reference pointer,
                 # as we have no guarantee that safetensors' `file.get_tensor()` will always give the same pointer.
-
         attach_align_device_hook_on_blocks(
             model,
             execution_device=execution_device,
@@ -430,6 +430,7 @@ def dispatch_model(
             skip_keys=skip_keys,
             preload_module_classes=preload_module_classes,
             tied_params_map=tied_params_map,
+            layers_to_be_hooked=layers_to_be_hooked
         )
 
         # warn if there is any params on the meta device
@@ -519,6 +520,7 @@ def load_checkpoint_and_dispatch(
     preload_module_classes: Optional[List[str]] = None,
     force_hooks: bool = False,
     strict: bool = False,
+    layers_to_be_hooked: Optional[List[str]] = None, #
 ):
     """
     Loads a (potentially sharded) checkpoint inside a model, potentially sending weights to a given device as they are
@@ -634,4 +636,5 @@ def load_checkpoint_and_dispatch(
         skip_keys=skip_keys,
         preload_module_classes=preload_module_classes,
         force_hooks=force_hooks,
+        layers_to_be_hooked=layers_to_be_hooked
     )

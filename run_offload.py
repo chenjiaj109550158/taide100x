@@ -6,9 +6,10 @@ import time
 
 from models import NaiveWrapper, HuggingFaceWrapper, OffloadWrapper
 
-from accelerate import init_empty_weights, load_checkpoint_and_dispatch, infer_auto_device_map
+from accelerate import init_empty_weights
 
 # python run_offload.py --mode ol --max-new-token 5
+# python run_offload.py --mode ol -s
 
 def main(args):
     # deterministic
