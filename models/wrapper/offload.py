@@ -56,7 +56,7 @@ class OffloadWrapper(WrapperBase):
             device_map=device_map,
             # no_split_module_classes=["LlamaDecoderLayer"],
             dtype=torch.float16,
-            # layers_to_be_hooked = layers_to_be_hooked
+            layers_to_be_hooked = layers_to_be_hooked
         )
         
     @torch.no_grad()
