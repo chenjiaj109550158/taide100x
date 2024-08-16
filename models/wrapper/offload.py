@@ -9,15 +9,42 @@ def t(module_name, module):
         # child_name = f"{llm}.{child_name}" if len(llm) > 0 else child_name
         # layers_to_hook.append(child_name)
         child_name = f"{module_name}.{child_name}"
-        print(f"child_name:{child_name}")
+        print(f"module_name:{child_name}")
+        try:
+            print(f"module._hf_hook: {type(child._hf_hook)}")
+        except:
+            print(f"module._hf_hook: None")
+
+        try:
+            if child._hf_hook.offload:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
+            else:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload}")
+        except:
+            print(f"module._hf_hook.offload: None")
+        print('----------------------')
         t(child_name, child)
 
-def get_layers_to_hook(llm):
-    for child_name, child in llm.named_children():
+def print_child_module_names(module):
+    for child_name, child in module.named_children():
         # child_name = f"{llm}.{child_name}" if len(llm) > 0 else child_name
         # layers_to_hook.append(child_name)
         child_name = f"{child_name}"
-        print(f"child_name:{child_name}")
+        print(f"module_name:{child_name}")
+        try:
+            print(f"module._hf_hook: {type(child._hf_hook)}")
+        except:
+            print(f"module._hf_hook: None")
+
+        try:
+            if child._hf_hook.offload:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
+            else:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload}")
+
+        except:
+            print(f"module._hf_hook.offload: None")
+        print('----------------------')
         t(child_name, child)
 
 class OffloadWrapper(WrapperBase):
@@ -37,18 +64,7 @@ class OffloadWrapper(WrapperBase):
         )
 
         layers_to_be_hooked = list(device_map.keys())
-        # print(device_map)
-        # for k in device_map.keys():
-        #     print(k)
-        # print('---------------------------------------------')
-        # get_layers_to_hook(llm)
-        # print('---------------------------------------------')
-        # if 'model.embed_tokens' in layers_to_be_hooked:
-        #     print('hi')
-        # else:
-        #     print('no')
-        
-        # exit()
+        print(device_map)
         
         self.llm = load_checkpoint_and_dispatch(
             llm,
@@ -57,8 +73,10 @@ class OffloadWrapper(WrapperBase):
             device_map=device_map,
             # no_split_module_classes=["LlamaDecoderLayer"],
             dtype=torch.float16,
-            # layers_to_be_hooked = layers_to_be_hooked
+            layers_to_be_hooked = layers_to_be_hooked
         )
+        # print_child_module_names(self.llm)
+        # exit()
         
     @torch.no_grad()
     def generate(
