@@ -31,7 +31,9 @@ from accelerate.utils.memory import clear_device_cache
 from accelerate.utils.modeling import get_non_persistent_buffers
 from accelerate.utils.other import recursive_getattr
 
-
+from ..wrapper.utils import print_cuda_mem_usage
+# from utils.operations import copy_to_device
+# from utils.modeling import set_module_tensor_to_device, copy_module_tensor_to_device
 _accelerate_added_attributes = ["to", "cuda", "npu", "xpu", "mlu", "musa"]
 
 
@@ -147,6 +149,7 @@ def add_hook_to_module(module: nn.Module, hook: ModelHook, append: bool = False)
         be discarded).
     """
 
+    # print('add_hook_to_module')
     if append and (getattr(module, "_hf_hook", None) is not None):
         old_hook = module._hf_hook
         remove_hook_from_module(module)
@@ -217,7 +220,59 @@ def remove_hook_from_module(module: nn.Module, recurse=False):
 
     return module
 
-from .utils.modeling import set_module_tensor_to_device_2
+class ActivationAlignDevicesHook(ModelHook):
+    """
+    A hook that contains callbacks to be executed just before and after the forward method of a model. The difference
+    with PyTorch existing hooks is that they get passed along the kwargs.
+
+    Class attribute:
+    - **no_grad** (`bool`, *optional*, defaults to `False`) -- Whether or not to execute the actual forward pass under
+      the `torch.no_grad()` context manager.
+    """
+    def __init__(
+        self,
+        execution_device: Optional[Union[int, str, torch.device]] = None,
+        io_same_device: bool = False,
+        skip_keys: Optional[Union[str, List[str]]] = None,
+    ):
+        self.execution_device = execution_device
+        self.io_same_device = io_same_device
+        self.skip_keys = skip_keys
+        
+        self.input_device = None
+        
+    def init_hook(self, module):
+        """
+        To be executed when the hook is attached to the module.
+
+        Args:
+            module (`torch.nn.Module`): The module attached to this hook.
+        """
+
+        return module.to("meta")
+
+    def pre_forward(self, module, *args, **kwargs):
+        if self.io_same_device:
+            self.input_device = find_device([args, kwargs])
+        return send_to_device(args, self.execution_device), send_to_device(
+            kwargs, self.execution_device, skip_keys=self.skip_keys
+        )
+
+    def post_forward(self, module, output):
+        """
+        To be executed just after the forward method of the model.
+
+        Args:
+            module (`torch.nn.Module`): The module whose forward pass been executed just before this event.
+            output (`Any`): The output of the module.
+
+        Returns:
+            `Any`: The processed `output`.
+        """
+        if self.io_same_device and self.input_device is not None:
+            output = send_to_device(output, self.input_device, skip_keys=self.skip_keys)
+        return output
+
 
 class InferenceAlignDevicesHook(ModelHook):
     """
@@ -284,9 +339,13 @@ class InferenceAlignDevicesHook(ModelHook):
             self.tied_params_map = None
 
         if not self.offload and self.execution_device is not None:
+            # print(f"module.to(self.execution_device): {}")
+            # print(f'[DEBUG] not self.offload')
             for name, _ in named_module_tensors(module, recurse=self.place_submodules):
-                set_module_tensor_to_device(module, name, self.execution_device, tied_params_map=self.tied_params_map)
+                # set_module_tensor_to_device(module, name, self.execution_device, tied_params_map=self.tied_params_map)
+                module.to(self.execution_device)
         elif self.offload:
+            print(f'[DEBUG] self.offload')
             self.original_devices = {
                 name: param.device for name, param in named_module_tensors(module, recurse=self.place_submodules)
             }
@@ -297,6 +356,8 @@ class InferenceAlignDevicesHook(ModelHook):
                         module, include_buffers=self.offload_buffers, recurse=self.place_submodules
                     )
                 }
+                print(self.weights_map)
+                exit()
             for name, _ in named_module_tensors(
                 module, include_buffers=self.offload_buffers, recurse=self.place_submodules, remove_non_persistent=True
             ):
@@ -310,18 +371,21 @@ class InferenceAlignDevicesHook(ModelHook):
                 ):
                     self.tied_params_names.add(name)
 
-                set_module_tensor_to_device(module, name, "meta")
+                # set_module_tensor_to_device(module, name, "meta")
+                module.to("meta")
 
             if not self.offload_buffers and self.execution_device is not None:
-                for name, _ in module.named_buffers(recurse=self.place_submodules):
-                    set_module_tensor_to_device(
-                        module, name, self.execution_device, tied_params_map=self.tied_params_map
-                    )
+                for name, _ in module.named_buffers(recurse=False):
+                    # set_module_tensor_to_device(
+                    #     module, name, self.execution_device, tied_params_map=self.tied_params_map
+                    # )
+                    module.to(self.execution_device)
             elif self.offload_buffers and self.execution_device is not None:
-                for name in get_non_persistent_buffers(module, recurse=self.place_submodules):
-                    set_module_tensor_to_device(
-                        module, name, self.execution_device, tied_params_map=self.tied_params_map
-                    )
+                for name in get_non_persistent_buffers(module, recurse=False):
+                    # set_module_tensor_to_device(
+                    #     module, name, self.execution_device, tied_params_map=self.tied_params_map
+                    # )
+                    module.to(self.execution_device)
 
         return module
 
@@ -332,12 +396,14 @@ class InferenceAlignDevicesHook(ModelHook):
         if self.offload:
             self.tied_pointers_to_remove = set()
 
+            print('------ v pre_forward self.offload v ------')
             for name, _ in named_module_tensors(
                 module,
                 include_buffers=self.offload_buffers,
                 recurse=self.place_submodules,
                 remove_non_persistent=True,
             ):
+                print("hihihihhih")
                 fp16_statistics = None
                 value = self.weights_map[name]
                 if "weight" in name and name.replace("weight", "SCB") in self.weights_map.keys():
@@ -358,43 +424,34 @@ class InferenceAlignDevicesHook(ModelHook):
                 ):
                     self.tied_pointers_to_remove.add((value.data_ptr(), self.execution_device))
 
-                self.sub_module_cache = set_module_tensor_to_device_2(
-                    module,
-                    name,
-                    self.execution_device,
-                    value=value,
-                    fp16_statistics=fp16_statistics,
-                    tied_params_map=self.tied_params_map,
-                )
+                # Recurse if needed
+                tensor_name = name
+                if "." in tensor_name:
+                    splits = tensor_name.split(".")
+                    for split in splits[:-1]:
+                        new_module = getattr(module, split)
+                        if new_module is None:
+                            raise ValueError(f"{module} has no attribute {split}.")
+                        module = new_module
+                    tensor_name = splits[-1]
 
-                # # Recurse if needed
-                # tensor_name = name
-                # if "." in tensor_name:
-                #     splits = tensor_name.split(".")
-                #     for split in splits[:-1]:
-                #         new_module = getattr(module, split)
-                #         if new_module is None:
-                #             raise ValueError(f"{module} has no attribute {split}.")
-                #         module = new_module
-                #     tensor_name = splits[-1]
+                if tensor_name not in module._parameters and tensor_name not in module._buffers:
+                    raise ValueError(f"{module} does not have a parameter or a buffer named {tensor_name}.")
 
-                # if tensor_name not in module._parameters and tensor_name not in module._buffers:
-                #     raise ValueError(f"{module} does not have a parameter or a buffer named {tensor_name}.")
-
-
-
-                # self.sub_module_cache = getattr(module, tensor_name)
+                self.sub_module_cache = getattr(module, tensor_name)
                 
-                # # method 1:
+                # method 1:
                 # new_value = torch.empty(value.shape, dtype=value.dtype, device=self.execution_device, requires_grad=self.sub_module_cache.requires_grad)
-                # new_value.copy_(value)
+                # new_value.copy_(value, non_blocking=True)
                 # module._parameters[tensor_name] = new_value
 
-                # # method 2:
-                # param_cls = type(module._parameters[tensor_name])
-                # module._parameters[tensor_name] = param_cls(value, requires_grad=self.sub_module_cache.requires_grad).to(self.execution_device)
-                # # print(f'sub_module size: {module._parameters[tensor_name].numel() * module._parameters[tensor_name].element_size()}')
+                # method 2:
+                param_cls = type(module._parameters[tensor_name])
+                module._parameters[tensor_name] = param_cls(value, requires_grad=self.sub_module_cache.requires_grad).to(self.execution_device, non_blocking=True)
+                print(f'in pre_forward({name}): {self.execution_device}')
+                # print(f'sub_module size: {module._parameters[tensor_name].numel() * module._parameters[tensor_name].element_size()}')
 
+            print('------ ^ pre_forward self.offload ^ ------')
         return send_to_device(args, self.execution_device), send_to_device(
             kwargs, self.execution_device, skip_keys=self.skip_keys
         )
@@ -411,8 +468,8 @@ class InferenceAlignDevicesHook(ModelHook):
                 # print(f'self.sub_module_cache.requires_grad: {self.sub_module_cache.requires_grad}')
                 # copy_module_tensor_to_device(module, name, "meta")
                 # print(self.sub_module_cache.device)
-                # module._parameters[name] = self.sub_module_cache
-                set_module_tensor_to_device(module, name, "meta")
+                module._parameters[name] = self.sub_module_cache
+
                 if type(module).__name__ == "Linear8bitLt":
                     module.state.SCB = None
                     module.state.CxB = None
@@ -435,6 +492,7 @@ class InferenceAlignDevicesHook(ModelHook):
                     print(f'------ detach_hook - {device} ------')
                     set_module_tensor_to_device(module, name, device, value=self.weights_map.get(name, None))
         return module
+
 
 class AlignDevicesHook(ModelHook):
     """
@@ -615,7 +673,6 @@ class AlignDevicesHook(ModelHook):
                     set_module_tensor_to_device(module, name, device, value=self.weights_map.get(name, None))
         return module
 
-
 def attach_execution_device_hook(
     module: torch.nn.Module,
     execution_device: Union[int, str, torch.device],
@@ -644,19 +701,49 @@ def attach_execution_device_hook(
             device, this parameter is useful to reuse the first available pointer of a shared weight for all others,
             instead of duplicating memory.
     """
+    # TODO 在這邊要看是不是children of layers_to_be_hooked 來決定要掛什麼樣的hook 如果是的話要掛offload=true，或是要事先掛好只轉activation的hook
+    print(f'execution_device: {execution_device}')
     if not hasattr(module, "_hf_hook") and len(module.state_dict()) > 0:
-        add_hook_to_module(
-            module,
-            InferenceAlignDevicesHook(execution_device, skip_keys=skip_keys, tied_params_map=tied_params_map),
-        )
+        # J: The offload is set to false(default), so choosing AlignDevicesHook or InferenceAlignDevicesHook doesnt matter.
+        # print(f'not hasattr(module, "_hf_hook")')
+        if 1:
+            add_hook_to_module(
+                module,
+                InferenceAlignDevicesHook(execution_device, skip_keys=skip_keys, tied_params_map=tied_params_map),
+            )
+        else:
+            add_hook_to_module(
+                module,
+                InferenceAlignDevicesHook(execution_device, skip_keys=skip_keys, tied_params_map=tied_params_map),
+            )
 
     # Break the recursion if we get to a preload module.
     if preload_module_classes is not None and module.__class__.__name__ in preload_module_classes:
         return
 
     for child in module.children():
+        # print("child in module.children()")
         attach_execution_device_hook(child, execution_device, tied_params_map=tied_params_map)
 
+def attach_activation_align_device_hook(
+    module: torch.nn.Module,
+    execution_device: Optional[torch.device] = None,
+    module_name: str = "",
+    skip_keys: Optional[Union[str, List[str]]] = None,
+):
+    hook = ActivationAlignDevicesHook(
+        execution_device=execution_device,
+        skip_keys=skip_keys,
+    )
+    add_hook_to_module(module, hook)
+    for child_name, child in module.named_children():
+        child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+        attach_activation_align_device_hook(
+            child,
+            execution_device=execution_device,
+            module_name=child_name,
+            skip_keys=skip_keys,
+        )
 
 def attach_align_device_hook(
     module: torch.nn.Module,
@@ -668,6 +755,7 @@ def attach_align_device_hook(
     skip_keys: Optional[Union[str, List[str]]] = None,
     preload_module_classes: Optional[List[str]] = None,
     tied_params_map: Optional[Dict[int, Dict[torch.device, torch.Tensor]]] = None,
+    layers_to_be_hooked: Optional[List[str]] = None,
 ):
     """
     Recursively attaches `AlignDevicesHook` to all submodules of a given model that have direct parameters and/or
@@ -698,14 +786,15 @@ def attach_align_device_hook(
             device, this parameter is useful to reuse the first available pointer of a shared weight for all others,
             instead of duplicating memory.
     """
+    # print(f'in attach_align_device_hook(): {module_name}')
     # Attach the hook on this module if it has any direct tensor.
     directs = named_module_tensors(module)
     full_offload = (
         offload and preload_module_classes is not None and module.__class__.__name__ in preload_module_classes
     )
-    print(f'{module_name} full_offload: {full_offload}')
-    print(module.__class__.__name__)
-    if len(list(directs)) > 0 or full_offload:
+
+    if len(list(directs)) > 0 or full_offload :
+        print(f"len(list(directs)) > 0 or full_offload: {module_name}")
         if weights_map is not None:
             prefix = f"{module_name}." if len(module_name) > 0 else ""
             prefixed_weights_map = PrefixedDataset(weights_map, prefix)
@@ -727,19 +816,59 @@ def attach_align_device_hook(
         return
 
     # Recurse on all children of the module.
-    for child_name, child in module.named_children():
-        child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
-        attach_align_device_hook(
-            child,
-            execution_device=execution_device,
-            offload=offload,
-            weights_map=weights_map,
-            offload_buffers=offload_buffers,
-            module_name=child_name,
-            preload_module_classes=preload_module_classes,
-            skip_keys=skip_keys,
-            tied_params_map=tied_params_map,
-        )
+    # print(f'module_name in attach_align_device_hook: {module_name}')
+    # if 0:
+    if layers_to_be_hooked is not None and module_name in layers_to_be_hooked:
+        # TODO 加一個類似attach_align_device_hook的recursive function來為layers_to_be_hooked的children加上特製hook
+        # print(f'|{module_name}| -- yes')
+        # if weights_map is not None:
+        #     prefix = f"{module_name}." if len(module_name) > 0 else ""
+        #     prefixed_weights_map = PrefixedDataset(weights_map, prefix)
+        # else:
+        #     prefixed_weights_map = None
+        # hook = InferenceAlignDevicesHook(
+        #     execution_device=execution_device,
+        #     offload=offload,
+        #     weights_map=prefixed_weights_map,
+        #     offload_buffers=offload_buffers,
+        #     place_submodules=True,
+        #     skip_keys=skip_keys,
+        #     tied_params_map=tied_params_map,
+        # )
+        # add_hook_to_module(module, hook, append=True)
+        for child_name, child in module.named_children():
+            child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+            attach_activation_align_device_hook(
+                child,
+                execution_device=execution_device,
+                module_name=child_name,
+                skip_keys=skip_keys,
+            )
+        return
+    else:
+        # print(f'|{module_name}| -- no')
+        # try:
+        #     print(f'[DEBUG] module_device: {next(module.parameters()).device} {module_name}v')
+        # except:
+        #     print(f'[DEBUG] module_device: None {module_name}v')
+        for child_name, child in module.named_children():
+            child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+            attach_align_device_hook(
+                child,
+                execution_device=execution_device,
+                offload=offload,
+                weights_map=weights_map,
+                offload_buffers=offload_buffers,
+                module_name=child_name,
+                preload_module_classes=preload_module_classes,
+                skip_keys=skip_keys,
+                tied_params_map=tied_params_map,
+                layers_to_be_hooked=layers_to_be_hooked
+            )
+        # try:
+        #     print(f'[DEBUG] module_device: {next(module.parameters()).device} {module_name}^')
+        # except:
+        #     print(f'[DEBUG] module_device: None {module_name}v')
 
 
 def remove_hook_from_submodules(module: nn.Module):
@@ -797,15 +926,8 @@ def attach_align_device_hook_on_blocks(
             instead of duplicating memory.
     """
 
-    print(f'\nmodule_name: {module_name}')
-    # print(execution_device)
-    # print(offload)
-    
     # If one device and one offload, we've got one hook.
-    # J: The whole module is on one device and one offload
-    # print(f'layers_to_be_hooked: {layers_to_be_hooked}')
     if not isinstance(execution_device, Mapping) and not isinstance(offload, dict):
-        print("case x")
         if not offload:
             hook = InferenceAlignDevicesHook(
                 execution_device=execution_device,
@@ -825,32 +947,7 @@ def attach_align_device_hook_on_blocks(
                 module_name=module_name,
                 skip_keys=skip_keys,
                 tied_params_map=tied_params_map,
-            )
-        return
-    elif layers_to_be_hooked is not None and module_name in layers_to_be_hooked and offload[module_name]:
-        print("case 0")
-        if not offload[module_name]:
-            print('[DEBUG]: not offload')
-            hook = InferenceAlignDevicesHook(
-                execution_device=execution_device[module_name],
-                io_same_device=True,
-                skip_keys=skip_keys,
-                place_submodules=True,
-                tied_params_map=tied_params_map,
-            )
-            add_hook_to_module(module, hook)
-        else:
-            print('[DEBUG]: offload')
-            attach_align_device_hook(
-                module,
-                execution_device=execution_device[module_name],
-                offload=True,
-                weights_map=weights_map,
-                offload_buffers=offload_buffers,
-                module_name=module_name,
-                skip_keys=skip_keys,
-                tied_params_map=tied_params_map,
-                # preload_module_classes=preload_module_classes
+                layers_to_be_hooked=layers_to_be_hooked
             )
         return
 
@@ -860,7 +957,7 @@ def attach_align_device_hook_on_blocks(
         offload = {key: offload for key in execution_device.keys()}
 
     if module_name in execution_device and module_name in offload and not offload[module_name]:
-        print("case 1")
+        # J: Dont need offloading
         hook = InferenceAlignDevicesHook(
             execution_device=execution_device[module_name],
             offload_buffers=offload_buffers,
@@ -872,7 +969,12 @@ def attach_align_device_hook_on_blocks(
         add_hook_to_module(module, hook)
         attach_execution_device_hook(module, execution_device[module_name], tied_params_map=tied_params_map)
     elif module_name in execution_device and module_name in offload:
-        print("case 2")
+        # J: Needs offloading
+
+        # J: Attach hooks on the moudle itself(if it's direct tensor of all_offload) and the moudle's children.
+        # print(f'\nmodule_name: {module_name}')
+        # print('*** Before attach_align_device_hook() ***')
+        # print(f'module_device: {next(module.parameters()).device}')
         attach_align_device_hook(
             module,
             execution_device=execution_device[module_name],
@@ -883,16 +985,52 @@ def attach_align_device_hook_on_blocks(
             skip_keys=skip_keys,
             preload_module_classes=preload_module_classes,
             tied_params_map=tied_params_map,
+            layers_to_be_hooked=layers_to_be_hooked
         )
-        print("case 2-1")
+        # print(f'\nmodule_name: {module_name}')
+        # print('*** After attach_align_device_hook() ***')
+        # print(f'module_device: {next(module.parameters()).device}')
+        # J: Attach hooks on the moudle itself(if it's not attached).
         if not hasattr(module, "_hf_hook"):
-            hook = InferenceAlignDevicesHook(
-                execution_device=execution_device[module_name],
-                io_same_device=(module_name == ""),
-                skip_keys=skip_keys,
-                tied_params_map=tied_params_map,
-            )
+            # hook = AlignDevicesHook(
+            #     execution_device=execution_device[module_name],
+            #     io_same_device=(module_name == ""),
+            #     skip_keys=skip_keys,
+            #     tied_params_map=tied_params_map,
+            # )
+            print(f'\nmodule_name: {module_name}')
+            print('*** Before add_hook_to_module() ***')
+            if not offload[module_name]:
+                raise ValueError("offload is false")
+            # print(f'module_device: {next(module.parameters()).device}')
+            # print_cuda_mem_usage()
+            # if 0:
+            if layers_to_be_hooked is not None and module_name in layers_to_be_hooked:
+                hook = InferenceAlignDevicesHook(
+                    execution_device=execution_device[module_name],
+                    offload=offload[module_name],
+                    offload_buffers=offload_buffers,
+                    skip_keys=skip_keys,
+                    tied_params_map=tied_params_map,
+                    place_submodules=offload[module_name] #here
+                )
+            else:
+                hook = InferenceAlignDevicesHook(
+                    execution_device=execution_device[module_name],
+                    offload=offload[module_name],
+                    offload_buffers=offload_buffers,
+                    skip_keys=skip_keys,
+                    tied_params_map=tied_params_map,
+                )
             add_hook_to_module(module, hook)
+            print('*** After add_hook_to_module() ***')
+            # print(f'module_device: {next(module.parameters()).device}')
+            # print_cuda_mem_usage()
+        # print('*** Before attach_execution_device_hook() ***')
+        # print(module_name)
+        # print(f'module_device: {next(module.parameters()).device}')
+        # print_cuda_mem_usage()
+        # print(f'module_name {module_name} attach_execution_device_hook starts')
         attach_execution_device_hook(
             module,
             execution_device[module_name],
@@ -900,8 +1038,12 @@ def attach_align_device_hook_on_blocks(
             skip_keys=skip_keys,
             tied_params_map=tied_params_map,
         )
+        # print(f'module_name {module_name} attach_execution_device_hook ends')
+        # print('*** After attach_execution_device_hook() ***')
+        # print(f'module_device: {next(module.parameters()).device}')
+        # print_cuda_mem_usage()
     elif module_name == "":
-        print("case 3")
+        # J: This is the root module node.
         hook = InferenceAlignDevicesHook(
             execution_device=execution_device.get(""),
             io_same_device=True,
@@ -909,21 +1051,25 @@ def attach_align_device_hook_on_blocks(
             tied_params_map=tied_params_map,
         )
         add_hook_to_module(module, hook)
-
-    for child_name, child in module.named_children():
-        child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
-        attach_align_device_hook_on_blocks(
-            child,
-            execution_device=execution_device,
-            offload=offload,
-            weights_map=weights_map,
-            offload_buffers=offload_buffers,
-            module_name=child_name,
-            preload_module_classes=preload_module_classes,
-            skip_keys=skip_keys,
-            tied_params_map=tied_params_map,
-            layers_to_be_hooked=layers_to_be_hooked,
-        )
+    if layers_to_be_hooked is not None and module_name in layers_to_be_hooked:
+        # print(f'|{module_name}| -- yes')
+        return
+    else:
+        # print(f'|{module_name}| -- no')
+        for child_name, child in module.named_children():
+            child_name = f"{module_name}.{child_name}" if len(module_name) > 0 else child_name
+            attach_align_device_hook_on_blocks(
+                child,
+                execution_device=execution_device,
+                offload=offload,
+                weights_map=weights_map,
+                offload_buffers=offload_buffers,
+                module_name=child_name,
+                preload_module_classes=preload_module_classes,
+                skip_keys=skip_keys,
+                tied_params_map=tied_params_map,
+                layers_to_be_hooked=layers_to_be_hooked
+            )
 
 
 class CpuOffload(ModelHook):

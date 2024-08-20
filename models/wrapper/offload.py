@@ -11,22 +11,22 @@ def t(module_name, module):
         # layers_to_hook.append(child_name)
         child_name = f"{module_name}.{child_name}"
         print(f"module_name:{child_name}")
+        # try:
+        #     print(f"module_device:{next(child.parameters()).device}")
+        # except:
+        #     print(f"module_device:None")
         try:
-            print(f"module_device:{next(child.parameters()).device}")
+            print(f"module._hf_hook: {type(child._hf_hook)}")
         except:
-            print(f"module_device:None")
-        # try:
-        #     print(f"module._hf_hook: {type(child._hf_hook)}")
-        # except:
-        #     print(f"module._hf_hook: None")
+            print(f"module._hf_hook: None")
 
-        # try:
-        #     if child._hf_hook.offload:
-        #         print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
-        #     else:
-        #         print(f"module._hf_hook.offload: {child._hf_hook.offload}")
-        # except:
-        #     print(f"module._hf_hook.offload: None")
+        try:
+            if child._hf_hook.offload:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload}")
+            else:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload}")
+        except:
+            print(f"module._hf_hook.offload: None")
         print('----------------------')
         t(child_name, child)
 
@@ -50,24 +50,24 @@ def print_child_module_names(module):
         # layers_to_hook.append(child_name)
         child_name = f"{child_name}"
         print(f"module_name:{child_name}")
+        # try:
+        #     print(f"module_device:{next(child.parameters()).device}")
+        # except:
+        #     print(f"module_device:None")
+
         try:
-            print(f"module_device:{next(child.parameters()).device}")
+            print(f"module._hf_hook: {type(child._hf_hook)}")
         except:
-            print(f"module_device:None")
+            print(f"module._hf_hook: None")
 
-        # try:
-        #     print(f"module._hf_hook: {type(child._hf_hook)}")
-        # except:
-        #     print(f"module._hf_hook: None")
+        try:
+            if child._hf_hook.offload:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
+            else:
+                print(f"module._hf_hook.offload: {child._hf_hook.offload}")
 
-        # try:
-        #     if child._hf_hook.offload:
-        #         print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
-        #     else:
-        #         print(f"module._hf_hook.offload: {child._hf_hook.offload}")
-
-        # except:
-        #     print(f"module._hf_hook.offload: None")
+        except:
+            print(f"module._hf_hook.offload: None")
         print('----------------------')
         t(child_name, child)
 
@@ -87,10 +87,15 @@ class OffloadWrapper(WrapperBase):
             dtype=torch.float16,
         )
 
-        layers_to_be_hooked = list(device_map.keys())
+        # layers_to_be_hooked = list(device_map.keys())
+        # print(layers_to_be_hooked)
+        # exit()
+        layers_to_be_hooked = []
+        for i in range(32):
+            layers_to_be_hooked.append("model.layers."+str(i))
         # print(device_map)
         
-        print("---------------------------------------------------------------------------------------------")
+        # print("---------------------------------------------------------------------------------------------")
         self.llm = load_checkpoint_and_dispatch(
             llm,
             checkpoint="C:\\Users\\JustinChen\\.cache\\huggingface\\hub\\models--meta-llama--Llama-2-7b-chat-hf\\snapshots\\f5db02db724555f92da89c216ac04704f23d4590\\model.safetensors.index.json", 
@@ -98,7 +103,9 @@ class OffloadWrapper(WrapperBase):
             device_map=device_map,
             # no_split_module_classes=["LlamaDecoderLayer"],
             dtype=torch.float16,
-            # layers_to_be_hooked = layers_to_be_hooked
+            preload_module_classes=["LlamaDecoderLayer"],
+            # layers_to_be_hooked = layers_to_be_hooked,
+
         )
         # print_cuda_mem_usage()
         print_child_module_names(self.llm)

@@ -49,10 +49,75 @@ from accelerate.utils import (
 )
 from accelerate.utils.other import recursive_getattr
 
+from ..wrapper.utils import print_cuda_mem_usage
 
 logger = logging.getLogger(__name__)
 
+def t(module_name, module):
+    for child_name, child in module.named_children():
+        # child_name = f"{llm}.{child_name}" if len(llm) > 0 else child_name
+        # layers_to_hook.append(child_name)
+        child_name = f"{module_name}.{child_name}"
+        print(f"module_name:{child_name}")
+        try:
+            print(f"module_device:{next(child.parameters()).device}")
+        except:
+            print(f"module_device:None")
+        # try:
+        #     print(f"module._hf_hook: {type(child._hf_hook)}")
+        # except:
+        #     print(f"module._hf_hook: None")
 
+        # try:
+        #     if child._hf_hook.offload:
+        #         print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
+        #     else:
+        #         print(f"module._hf_hook.offload: {child._hf_hook.offload}")
+        # except:
+        #     print(f"module._hf_hook.offload: None")
+        print('----------------------')
+        t(child_name, child)
+
+# def tt(module_name, module):
+#     for child_name, child in module.named_children():
+#         # child_name = f"{llm}.{child_name}" if len(llm) > 0 else child_name
+#         # layers_to_hook.append(child_name)
+#         child_name = f"{module_name}.{child_name}"
+#         if child_name != "model.layers.31" and "model.layers.31" in child_name:
+#             print(f"child_name: {child_name}")
+#             if "model.layers.31.mlp" not in child_name:
+#                 child.to("meta")
+#             # else:
+#             #     child.to("cpu")
+
+#         tt(child_name, child)
+
+def print_child_module_names(module):
+    for child_name, child in module.named_children():
+        # child_name = f"{llm}.{child_name}" if len(llm) > 0 else child_name
+        # layers_to_hook.append(child_name)
+        child_name = f"{child_name}"
+        print(f"module_name:{child_name}")
+        try:
+            print(f"module_device:{next(child.parameters()).device}")
+        except:
+            print(f"module_device:None")
+
+        # try:
+        #     print(f"module._hf_hook: {type(child._hf_hook)}")
+        # except:
+        #     print(f"module._hf_hook: None")
+
+        # try:
+        #     if child._hf_hook.offload:
+        #         print(f"module._hf_hook.offload: {child._hf_hook.offload} ************************** ")
+        #     else:
+        #         print(f"module._hf_hook.offload: {child._hf_hook.offload}")
+
+        # except:
+        #     print(f"module._hf_hook.offload: None")
+        print('----------------------')
+        t(child_name, child)
 @contextmanager
 def init_empty_weights(include_buffers: bool = None):
     """
@@ -349,6 +414,9 @@ def dispatch_model(
             Whether or not to force device hooks to be attached to the model even if all layers are dispatched to a
             single device.
     """
+    # print("Before dispatch")
+    # print_child_module_names(model)
+    
     # Error early if the device map is incomplete.
     check_device_map(model, device_map)
 
@@ -421,6 +489,8 @@ def dispatch_model(
 
                 # Note: To handle the disk offloading case, we can not simply use weights_map[param_name].data_ptr() as the reference pointer,
                 # as we have no guarantee that safetensors' `file.get_tensor()` will always give the same pointer.
+        # print('*** Before attach_align_device_hook_on_blocks() ***')
+        # print_cuda_mem_usage()
         attach_align_device_hook_on_blocks(
             model,
             execution_device=execution_device,
@@ -432,7 +502,8 @@ def dispatch_model(
             tied_params_map=tied_params_map,
             layers_to_be_hooked=layers_to_be_hooked
         )
-
+        # print('*** After attach_align_device_hook_on_blocks() ***')
+        # print_cuda_mem_usage()
         # warn if there is any params on the meta device
         offloaded_devices_str = " and ".join(
             [device for device in set(device_map.values()) if device in ("cpu", "disk")]
